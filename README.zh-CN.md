@@ -1,168 +1,98 @@
-<!-- Language switcher. Keep this row identical across every README.<lang>.md. -->
-<p align="center">
-  <b>English</b> &nbsp;·&nbsp;
-  <a href="README.zh-CN.md">简体中文</a> &nbsp;·&nbsp;
-  <a href="README.es.md">Español</a> &nbsp;·&nbsp;
-  <a href="README.ja.md">日本語</a> &nbsp;·&nbsp;
-  <a href="README.fr.md">Français</a> &nbsp;·&nbsp;
-  <a href="README.de.md">Deutsch</a>
-</p>
+# Sleepless Guard
 
-> 本翻译由社区或机器生成，可能落后于英文版 README。请以英文版本为准。请参阅 [English README](README.md)。
+[English documentation](README.md) · **源码测试版 v0.1.0-beta.1**
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/hero-dark.gif">
-    <source media="(prefers-color-scheme: light)" srcset="assets/hero-light.gif">
-    <img alt="Sleepless: keep your Mac awake with the lid closed" src="assets/hero-light.gif" width="780">
-  </picture>
-</p>
+一个让 MacBook 按需保持运行、并在任务结束后恢复正常休眠的菜单栏工具。支持**简体中文、繁体中文、英文**，随系统语言选择。基于 Adam Boudjemaa 的 [Sleepless v1.2.7](https://github.com/Aboudjem/Sleepless)，保留 MIT 许可证，并增加独立守护程序。不是上游官方版本，也不是 Apple 产品。
 
-<p align="center">
-  <b>合盖、使用电池、没有外接显示器，照样让 MacBook 保持唤醒。</b><br>
-  <sub>一个菜单栏开关，配自动关闭定时器和电量下限截止，让你永远不会把电耗光。</sub>
-</p>
+软件免费，费用 **人民币 ¥0**。无需账号、订阅、Homebrew 或第三方 Python 依赖；运行时不联网，不上传使用数据。源码构建需要 Apple Command Line Tools。GitHub 下载可能受所在网络影响；请优先使用本仓库或上游的原始来源。
 
-<p align="center">
-  <a href="https://github.com/Aboudjem/Sleepless/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Aboudjem/Sleepless/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white&style=flat-square&color=8B5CF6"></a>
-  <a href="https://github.com/Aboudjem/Sleepless/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/Aboudjem/Sleepless?label=release&logo=apple&logoColor=white&style=flat-square&color=8B5CF6"></a>
-  <a href="https://github.com/Aboudjem/Sleepless/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/Aboudjem/Sleepless/total?label=downloads&style=flat-square&color=6366F1"></a>
-  <a href="https://github.com/Aboudjem/Sleepless/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/Aboudjem/Sleepless?style=flat-square&color=6366F1"></a>
-  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-D946EF?style=flat-square"></a>
-  <img alt="Platform: macOS 26, Apple Silicon" src="https://img.shields.io/badge/macOS%2026-Apple%20Silicon-8B5CF6?style=flat-square&logo=apple&logoColor=white">
-</p>
-<p align="center">
-  <img alt="Build provenance: attested (SLSA)" src="https://img.shields.io/badge/build%20provenance-attested-8B5CF6?style=flat-square&logo=githubactions&logoColor=white">
-  <img alt="Checksums: SHA-256" src="https://img.shields.io/badge/checksums-SHA--256-6366F1?style=flat-square">
-  <img alt="Telemetry: none" src="https://img.shields.io/badge/telemetry-none-D946EF?style=flat-square">
-  <a href="https://github.com/Aboudjem/homebrew-tap"><img alt="Install: Homebrew cask" src="https://img.shields.io/badge/homebrew-cask-8B5CF6?style=flat-square&logo=homebrew&logoColor=white"></a>
-</p>
+## 语言
 
-<p align="center">
-  <img alt="Sleepless demo: flip the switch, set an auto-off timer, drag the battery-floor slider" src="assets/demo.gif" width="760">
-</p>
+应用根据 macOS 为应用选择的语言或系统首选语言，加载英文、简体中文或繁体中文；其他语言回退到英文。在 macOS 中修改应用语言后，请退出并重新打开应用。安装脚本与主要公开文档使用英文。翻译文件位于 `locales/`，三种语言各有完整的 27 项界面与通知文本，显示名称也已本地化。
 
-> [!NOTE]
-> 合上盖子会让 Mac 睡眠，基于 `caffeinate` 的应用（KeepingYouAwake 之类）从设计上就改变不了这件事。Sleepless 切换的是唯一能做到的那个设置，`pmset disablesleep`，再配上安全机制，所以你大可放心地把它忘掉。
+## 使用方式与保护规则
 
-## 安装
+| 情况 | 行为 |
+| --- | --- |
+| 正常打开应用 | 不会自动开启防休眠；由你手动打开开关 |
+| 电池供电开启任务 | 最长 2 小时；电量 ≤ 30% 时请求恢复正常休眠 |
+| 接电开启任务 | 最长 12 小时；拔电后结束本次接电任务 |
+| 电池任务中插电 | 仍保留最初的 2 小时上限，不借此延长任务 |
+| 选择 1 小时或 2 小时 | 应用的计时器进一步限制任务时长 |
+| 退出应用或应用异常结束 | 应用或独立守护程序请求恢复正常休眠 |
+| 守护程序重新启动 | 先请求恢复正常休眠，不自动续接上一次任务 |
+
+守护程序通常每 5 秒检查一次，实际响应受系统调度和命令执行影响。应用可将电量底线调高到 50%；界面中的“默认上限”仍受独立守护程序的 2/12 小时上限约束。安装后守护程序随登录运行，菜单栏应用的登录启动默认关闭。
+
+## 必须了解的限制
+
+本工具使用 macOS 的全局 `pmset -a disablesleep` 开关，其中 `disablesleep` 是未写入官方手册的行为，系统升级可能改变效果。它会影响整台电脑的系统休眠；不会创建虚拟显示器，不修改屏幕分辨率，不通过显示断言强制亮屏。
+
+**关闭防休眠只是允许正常休眠，不等于立即让电脑睡着。** 腾讯会议等其他程序仍可能阻止息屏或休眠。本工具不强制结束这些程序。不要与其他会控制 `disablesleep` 的工具一起运行，包括另一份 Sleepless；全局开关没有所属应用，多个控制器会相互影响。
+
+**电脑运行时不要放进封闭的包里。** 请保持通风，收包前结束任务、使用 Apple 菜单中的“睡眠”并确认电脑停止运行。本项目**没有温度传感器监测或过热关机功能**，不能保证一定不会发热、掉电或丢失任务。
+
+这次公开版的完整 GUI 验收和实际合盖/开盖测试仍待完成；策略自动测试通过不等于你的机器已经验证。请先用不重要的测试任务验收，详见 [验证记录与手工检查](docs/VALIDATION.md)。
+
+## 构建与安装
+
+目前支持 **Apple Silicon MacBook + macOS 26 及以上**。需要 Apple Command Line Tools 中的 `swiftc`、`codesign` 和 `/usr/bin/python3`。
 
 ```sh
-brew install --cask aboudjem/tap/sleepless
-/Applications/Sleepless.app/Contents/Resources/grant.sh   # one-time passwordless grant
+xcode-select --install
+git clone https://github.com/stevechen256-source/Sleepless-Guard.git
+cd Sleepless-Guard
+./install.sh --dry-run
 ```
 
-| 其他方式 | |
-|---|---|
-| **直接下载** | 获取[最新发布版本](https://github.com/Aboudjem/Sleepless/releases/latest)，解压到 `/Applications`，然后在 **系统设置 → 隐私与安全性 → 仍要打开** 里批准它（它是临时签名 ad-hoc）。 |
-| **从源码构建** | `git clone https://github.com/Aboudjem/Sleepless.git && cd Sleepless && ./install.sh`（不会有 Gatekeeper 提示）。 |
-
-然后点击菜单栏里的咖啡杯，拨动开关，合上盖子。
-
-## 功能特性
-
-| | | |
-|---|---|---|
-| ☕ | **一个开关** | 点击菜单栏里的咖啡杯，拨动开关。 |
-| ⏲️ | **自动关闭定时器** | 1 小时或 2 小时，带实时倒计时，到点关闭。 |
-| 🔋 | **电量下限** | 电池供电时在 5–50% 自动关闭（默认 15%）。 |
-| 🪫 | **Low Power Mode** | 电池供电下若 LPM 开启，自动让位。 |
-| 🖥️ | **无需转接** | 合盖、电池供电即可。不用显示器，不用 HDMI 插头。 |
-| 🚀 | **登录时启动** | 可选，默认关闭，始终以关闭状态启动。 |
-| 🪶 | **小巧且原生** | 一个 AppKit 文件。无 Dock 图标、守护进程或 kext。 |
-
-**菜单栏图标：** 空杯 = 关闭 · 满杯 = 唤醒 · 满杯加一个点 = 电池供电下唤醒（自动关闭生效中）。
-
-## Sleepless 与其他方案对比
-
-| | **Sleepless** | Amphetamine | KeepingYouAwake | `caffeinate` |
-|---|:---:|:---:|:---:|:---:|
-| 合盖、无显示器时保持唤醒 | ✅ ¹ | ⚠️ ² | ❌ ³ | ❌ |
-| 电池供电 | ✅ | ✅ | ✅ 开盖 | ⚠️ ⁴ |
-| 自动关闭定时器 | ✅ | ✅ | ✅ | ❌ |
-| 低电量时自动关闭 | ✅ | ✅ | ✅ | ❌ |
-| 开源 | ✅ MIT | ❌ App Store | ✅ MIT | Apple |
-| 价格 | 免费 | 免费 | 免费 | 免费 |
-
-<sub>数据截至 2026-06。¹ 使用 `pmset disablesleep` 并把标志读回来；具体表现取决于硬件和 macOS 版本。² 有记载支持合盖显示模式，但被普遍反映会在电源切换时于 Apple Silicon 上失效（[AE #28](https://github.com/x74353/Amphetamine-Enhancer/issues/28)）；应用本身闭源。³ 从设计上就做不到合盖唤醒，因为它封装的是 `caffeinate`（[#66](https://github.com/newmarcel/KeepingYouAwake/issues/66)）。⁴ `caffeinate -i` 可在电池供电下运行；`-s` 仅在接通电源时有效。</sub>
-
-## 用它来……
-
-- 🤖 合盖跑完通宵任务：智能体运行、构建、渲染、ML 训练。
-- 📡 从包里共享一个热点。
-- ⬇️ 让大文件下载、上传或备份继续运行。
-- 🖥️ 让本地服务器或 SSH 会话保持可达。
-
-> [!TIP]
-> 设一个你信得过的电量下限（比如 20%）再加一个定时器，你就能放心走开，不用一直盯着电量。
-
-## 工作原理
-
-Sleepless 切换 `pmset disablesleep`（内核的 `SleepDisabled` 标志），把它读回来让菜单栏绝不撒谎，并在到达你的电量下限、进入 Low Power Mode、定时器结束或重启时把它还原。GUI 应用没法输入密码，所以安装程序会加一条范围严格限定的 sudoers 规则，**只允许两条命令**：
-
-```
-<you> ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a disablesleep 1
-```
-
-- **无法被放宽。** sudoers 按字面匹配参数，没有通配符。
-- **没有可劫持的东西。** 没有守护进程、辅助脚本或 shell。它直接调用 `/usr/bin/pmset`。
-- **始终可逆。** 重启、电量下限、定时器，或 `./uninstall.sh`（它会证明授权已经清除）。
-
-验证一个下载，无需 Apple 账户：
+`--dry-run` 只显示将使用的路径，不编译、不安装、不请求管理员授权、不改变休眠设置。确认后自行执行：
 
 ```sh
-shasum -a 256 -c SHA256SUMS
-gh attestation verify Sleepless-*.zip -R Aboudjem/Sleepless
+./install.sh
+open "$HOME/Applications/SleeplessCN.app"
 ```
 
-完整威胁模型、为何无法上架 App Store，以及审计指南：[SECURITY.md](SECURITY.md) · [docs/AUDIT.md](docs/AUDIT.md)。
+安装器会本地编译，明确询问后为当前用户安装两条特定 `pmset` 命令的授权，并安装应用与守护程序。安装器不会打开应用或开启防休眠。整个安装脚本**不要加 sudo**；需要权限的步骤会单独请求。
 
-## 常见问题
+这是本地 ad-hoc 签名的源码版本，没有 Developer ID 签名或 Apple 公证。不要为它关闭 Gatekeeper 或 SIP。仅编译可运行 `./build.sh`；单独打开未安装守护程序的构建产物，不能启用防休眠。
 
-<details>
-<summary><b><code>pmset disablesleep</code> 在 Apple Silicon（M1/M2/M3）上还有效吗？</b></summary>
+## 安装位置与权限
 
-有效。`pmset -a disablesleep 1` 会在 Apple Silicon 上设置内核的 `SleepDisabled` 标志，已在 macOS 26.3 上第一手确认，能让 Mac 在合盖、电池供电下保持唤醒。用 `pmset -g | grep SleepDisabled` 验证（应读作 `1`）。说它“不再有效”的说法，通常描述的是 `caffeinate` 或基于 caffeinate 的应用，那是另一套机制。
-</details>
+- 应用：`~/Applications/SleeplessCN.app`
+- 守护程序与本地状态：`~/Library/Application Support/SleeplessCN/`
+- 守护启动项：`~/Library/LaunchAgents/io.github.sleeplesscn.guard.plist`
+- 独立授权：`/etc/sudoers.d/sleeplesscn-<当前用户数字ID>`
 
-<details>
-<summary><b>为什么装了 Amphetamine 或 KeepingYouAwake，合盖时 Mac 还是会睡眠？</b></summary>
+只允许当前用户免重复密码运行 `/usr/bin/pmset -a disablesleep 0` 和 `1`，不授权任意命令或不受限制的 `pmset`。该权限属于当前用户，因此其他以相同用户运行的程序也能调用这两条命令。详见 [SECURITY.md](SECURITY.md)。
 
-那些工具用的是 macOS 电源断言，它能停掉空闲计时器，却无法覆盖硬件层面的合盖触发。KeepingYouAwake 封装的是 `caffeinate`，做不到合盖唤醒（[#66](https://github.com/newmarcel/KeepingYouAwake/issues/66)）。而 Sleepless 使用的 `pmset disablesleep` 可以。
-</details>
+安装器不覆盖已有目标。测试版升级请先卸载本衍生版，再重新安装。原版 Sleepless 不会被替换，其共享授权文件也不会被删除。保留内部 `SleeplessCN` 文件名是为了与上游隔离。
 
-<details>
-<summary><b>合盖运行安全吗？会过热或耗光电池吗？</b></summary>
+## 恢复与卸载
 
-对于下载、同步、共享热点这类轻量、无人看管的任务来说是安全的。完全合盖下长时间高负载会限制散热气流，所以请自己掂量。电量下限、Low Power Mode 自动关闭和定时器都会在 Mac 电量见底之前把它停下来。
-</details>
+点击开关，或选择“退出并恢复休眠”。也可以在源码目录运行：
 
-<details>
-<summary><b>它需要 sudo、内核扩展或后台守护进程吗？</b></summary>
+```sh
+./restore-sleep.sh
+```
 
-它需要一条范围严格限定的 `sudo` 授权（两条精确的 `pmset` 命令），这样 GUI 应用才能在不弹密码提示的情况下切换设置。没有内核扩展，也没有守护进程。整个应用就是一个 AppKit 文件。
-</details>
+它只请求恢复允许休眠，不会立刻打断正在进行的工作让电脑睡着。需要收包时，请自行选择 Apple 菜单 → 睡眠。
 
-<details>
-<summary><b>怎样停止它或移除它？</b></summary>
+卸载前保留源码目录，运行：
 
-把开关关掉，或者让定时器或电量下限替你关掉它，正常睡眠就会恢复。重启同样会把它重置。`./uninstall.sh` 会移除应用、登录项和 sudoers 授权，然后证明授权已经清除。
-</details>
+```sh
+./uninstall.sh --dry-run
+./uninstall.sh
+```
 
-<details>
-<summary><b>为什么它没有公证？</b></summary>
+卸载器先验证归属并恢复允许休眠，再退出应用、移除本工具登录项、停止守护并删除本工具自己的文件和授权。无法恢复休眠或应用没有退出时会停止，不会虚报成功。支持目录里不认识的其他文件会保留；其他工具的授权不会被删除。
 
-它是一个个人的开源工具，没有付费的 Apple Developer ID，所以采用临时签名（ad-hoc）。从源码构建可以跳过 Gatekeeper，或者对预构建的应用使用 **仍要打开**。公证步骤记录在 [docs/AUDIT.md](docs/AUDIT.md) 中。
-</details>
+## 测试与许可
 
-## 参与贡献
+```sh
+/usr/bin/python3 scripts/guard.py --self-test
+/usr/bin/python3 -m unittest discover -s tests -v
+```
 
-欢迎提交 Issue 和 PR，尤其欢迎翻译以及来自其他硬件的测试报告。请参阅 [CONTRIBUTING.md](CONTRIBUTING.md) 和[行为准则](CODE_OF_CONDUCT.md)。Sleepless 会刻意保持小巧。
+测试不运行真实安装器、不修改电源设置。问题反馈请提供系统版本、芯片、电源状态和复现步骤，并移除用户名、完整家目录、凭据、私人笔记和日志。
 
-## 许可证
-
-[MIT](LICENSE) © 2026 Adam Boudjemaa。
-
-<p align="center">
-  <sub>如果 Sleepless 帮你省去了一趟终端，点个 ⭐ 能帮助更多人发现它。</sub>
-</p>
+本项目遵循 [MIT 许可证](LICENSE)，保留原作者 Adam Boudjemaa 的版权和[来源说明](NOTICE.md)。软件按现状提供，不提供任何担保。

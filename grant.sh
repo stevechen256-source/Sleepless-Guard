@@ -1,58 +1,55 @@
-#!/usr/bin/env bash
-# grant.sh — install ONLY the passwordless grant that lets Sleepless toggle lid-close
-# sleep without a prompt. Self-contained: works from a clone OR from inside the app
-# bundle (Contents/Resources), so Homebrew-cask users can run it after install.
-#
-# It writes one tightly scoped sudoers drop-in (root:wheel, 0440) permitting exactly two
-# commands and nothing else. See SECURITY.md. Undo with uninstall.sh (or sudo rm the file).
+#!/bin/bash
+# Isolated, per-UID grant. Never alters the upstream Sleepless sudoers file.
 set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SUDOERS_DST="/etc/sudoers.d/sleepless-disablesleep"
-# Resolve the REAL user. Prefer SLEEPLESS_USER (the app passes it, because under the native
-# auth sheet this script runs as root with SUDO_USER unset), then SUDO_USER, then the caller.
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 USER_NAME="${SLEEPLESS_USER:-${SUDO_USER:-$(id -un)}}"
-# Never install a root-owned grant (it is useless and not what the user wants): if we somehow
-# resolved to root/empty, fall back to the GUI console user, and refuse if still unresolved.
-if [ -z "$USER_NAME" ] || [ "$USER_NAME" = "root" ]; then
-  USER_NAME="$(stat -f%Su /dev/console 2>/dev/null || true)"
+if [ -z "$USER_NAME" ] || [ "$USER_NAME" = root ]; then
+  echo 'Run for a regular desktop user; refusing to grant access to root.' >&2; exit 1
 fi
-if [ -z "$USER_NAME" ] || [ "$USER_NAME" = "root" ]; then
-  echo "error: could not resolve a non-root user for the grant; refusing to install." >&2
+USER_UID="$(id -u "$USER_NAME")"
+case "$USER_UID" in ''|*[!0-9]*) echo 'Invalid user ID.' >&2; exit 1 ;; esac
+[ "$USER_UID" -ge 500 ] || { echo 'Refusing a system account.' >&2; exit 1; }
+DST="/etc/sudoers.d/sleeplesscn-$USER_UID"
+MARKER="# Managed by SleeplessCN; uid=$USER_UID"
+MODE="${1:-}"
+case "$MODE" in ''|--yes|--revoke) ;; *) echo 'Usage: grant.sh [--yes|--revoke]' >&2; exit 1 ;; esac
+if [ "$(id -u)" -ne 0 ]; then
+  echo "Manage the dedicated Sleepless CN Guard grant: $DST (mode: ${MODE:-install})"
+  echo "It allows only pmset -a disablesleep 0 and 1. Other applications' grants are not changed."
+  if [ "$MODE" != --yes ]; then
+    read -r -p 'Continue? Type y: ' reply
+    [ "$reply" = y ] || { echo 'Cancelled.'; exit 1; }
+  fi
+  exec /usr/bin/sudo /usr/bin/env SLEEPLESS_USER="$USER_NAME" /bin/bash "$0" "${MODE:---yes}"
+fi
+[ ! -L "$DST" ] || { echo 'Grant destination is a symlink; refusing.' >&2; exit 1; }
+if [ -e "$DST" ] && [ "$(head -n 1 "$DST")" != "$MARKER" ]; then
+  echo 'Existing file is not owned by this application; refusing to overwrite or delete.' >&2; exit 1
+fi
+if [ "$MODE" = --revoke ]; then
+  rm -f "$DST"
+  /usr/sbin/visudo -c >/dev/null
+  echo "Removed this application's dedicated grant. Other grants were preserved."
+  exit 0
+fi
+[ -d /etc/sudoers.d ] || { echo 'Missing /etc/sudoers.d; no changes made.' >&2; exit 1; }
+/usr/sbin/visudo -c >/dev/null
+TMP="$(mktemp /private/tmp/sleeplesscn-grant.XXXXXX)"
+trap 'rm -f "$TMP"' EXIT
+printf '%s\n#%s ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a disablesleep 1\n' "$MARKER" "$USER_UID" > "$TMP"
+chmod 600 "$TMP"
+/usr/sbin/visudo -cf "$TMP" >/dev/null
+if [ -e "$DST" ]; then
+  if /usr/bin/cmp -s "$TMP" "$DST"; then
+    echo 'The matching grant is already installed; no file was replaced.'
+    exit 0
+  fi
+  echo 'The existing managed grant differs; inspect it before replacing it.' >&2
   exit 1
 fi
-
-# Run privileged steps with sudo normally, but directly when we are ALREADY root (e.g. the
-# app installs this via one native macOS auth sheet, so there is no Terminal + no sudo prompt).
-SUDO="sudo"
-[ "$(id -u)" -eq 0 ] && SUDO=""
-
-# Source of truth for the grant line: the repo template if present, else the identical
-# inline string (when this script ships inside the .app bundle, no template is alongside).
-TEMPLATE="$SCRIPT_DIR/sleepless.sudoers.template"
-if [ -f "$TEMPLATE" ]; then
-  GRANT="$(sed "s/__USER__/$USER_NAME/" "$TEMPLATE")"
-else
-  GRANT="$USER_NAME ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a disablesleep 1"
+/usr/bin/install -m 0440 -o root -g wheel "$TMP" "$DST"
+if ! /usr/sbin/visudo -c >/dev/null; then
+  rm -f "$DST"
+  echo 'Global sudoers validation failed; the just-written application grant was removed.' >&2; exit 1
 fi
-
-echo "Sleepless will install this passwordless grant at $SUDOERS_DST (root:wheel, 0440):"
-echo ""
-echo "    $GRANT"
-echo ""
-echo "It permits ONLY turning lid-close sleep on (1) or off (0). Nothing else."
-if [ "${1:-}" != "--yes" ] && [ "${1:-}" != "-y" ]; then
-  read -r -p "Continue? [y/N] " reply
-  case "$reply" in [yY]*) ;; *) echo "Aborted."; exit 1 ;; esac
-fi
-
-TMP="$(mktemp)"
-printf '%s\n' "$GRANT" > "$TMP"
-if ! $SUDO visudo -cf "$TMP" >/dev/null; then
-  echo "error: generated sudoers failed validation; not installing." >&2
-  rm -f "$TMP"; exit 1
-fi
-$SUDO install -m 0440 -o root -g wheel "$TMP" "$SUDOERS_DST"
-rm -f "$TMP"
-$SUDO visudo -c >/dev/null && echo "✅ grant installed and sudoers parses cleanly ($SUDOERS_DST)."
-echo "   Toggle Sleepless from the menu bar; it will no longer need a password."
+echo 'Grant installed and syntax validated. Keep-awake is still off.'

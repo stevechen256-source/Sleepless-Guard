@@ -1,85 +1,31 @@
-#!/usr/bin/env bash
-# build.sh — compile Sleepless.app from source with the Command Line Tools only.
-#
-# No Xcode project, no Package.swift: just `swiftc` + a hand-assembled .app bundle,
-# ad-hoc signed. Works from any clone (no hardcoded paths or usernames).
-#
-# Usage:
-#   ./build.sh                      # build into ./build/Sleepless.app
-#   ./build.sh /Applications        # build straight into /Applications
-#   DEST=/Applications ./build.sh   # same, via env
-#   ./build.sh --regen-icon         # re-render the .icns from make-icon.swift first
-#
-# It NEVER touches sudo, sleep settings, or the menu bar. Use install.sh for the
-# passwordless grant + login item.
+#!/bin/bash
+# Compile locally; no system power settings, authorization, or app launch.
 set -euo pipefail
-
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP_NAME="Sleepless"
-# macOS arm64 target. Sleepless is verified on macOS 26 (Tahoe) / Apple Silicon.
-# Override with TARGET=... (e.g. CI on a runner whose SDK predates macOS 26).
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEST="$ROOT/build"
+APP="$DEST/SleeplessCN.app"
 TARGET="${TARGET:-arm64-apple-macos26.0}"
-
-# Destination: first non-flag arg, else $DEST, else ./build
-DEST="${DEST:-}"
-REGEN_ICON=0
-for arg in "$@"; do
-  case "$arg" in
-    --regen-icon) REGEN_ICON=1 ;;
-    *) DEST="$arg" ;;
-  esac
-done
-DEST="${DEST:-$REPO/build}"
-
-APP="$DEST/$APP_NAME.app"
-CONTENTS="$APP/Contents"
-
-echo "==> Building $APP_NAME.app"
-echo "    repo:   $REPO"
-echo "    dest:   $DEST"
-echo "    target: $TARGET"
-
-command -v swiftc >/dev/null || { echo "error: swiftc not found. Install the Command Line Tools: xcode-select --install" >&2; exit 1; }
-
-# 1. Optionally regenerate the icon from the SF Symbol (needs a GUI session for AppKit).
-ICNS="$REPO/assets/$APP_NAME.icns"
-if [ "$REGEN_ICON" = "1" ]; then
-  echo "==> Regenerating icon from make-icon.swift"
-  TMP_ICON="$(mktemp -d)"
-  swiftc -O -framework AppKit "$REPO/make-icon.swift" -o "$TMP_ICON/mkicon"
-  "$TMP_ICON/mkicon" "$TMP_ICON"
-  iconutil -c icns "$TMP_ICON/$APP_NAME.iconset" -o "$REPO/assets/$APP_NAME.icns"
-  rm -rf "$TMP_ICON"
+command -v swiftc >/dev/null || { echo 'Install Apple Command Line Tools first: xcode-select --install' >&2; exit 1; }
+if [ -L "$DEST" ] || [ -L "$APP" ]; then
+  echo 'Build destinations must not be symlinks.' >&2; exit 1
 fi
-[ -f "$ICNS" ] || { echo "error: missing $ICNS (run ./build.sh --regen-icon)" >&2; exit 1; }
-
-# 2. Compile the executable.
-echo "==> Compiling App.swift"
-BIN_TMP="$(mktemp -d)"
+mkdir -p "$DEST"
+STAGE="$(mktemp -d "$DEST/.stage.XXXXXX")"
+trap 'rm -rf "$STAGE"' EXIT
+BUNDLE="$STAGE/SleeplessCN.app"
+mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
+echo 'Building Sleepless CN Guard...'
 swiftc -O -parse-as-library -target "$TARGET" -framework AppKit -framework ServiceManagement \
-  "$REPO/App.swift" -o "$BIN_TMP/$APP_NAME"
-
-# 3. Assemble the bundle: Contents/{Info.plist, MacOS/<exe>, Resources/<name>.icns}
-echo "==> Assembling bundle"
+  "$ROOT/App.swift" -o "$BUNDLE/Contents/MacOS/SleeplessCN"
+cp "$ROOT/Info.plist" "$BUNDLE/Contents/Info.plist"
+cp "$ROOT/assets/Sleepless.icns" "$BUNDLE/Contents/Resources/Sleepless.icns"
+cp -R "$ROOT/locales/"*.lproj "$BUNDLE/Contents/Resources/"
+cp "$ROOT/grant.sh" "$ROOT/NOTICE.md" "$ROOT/LICENSE" "$BUNDLE/Contents/Resources/"
+chmod 755 "$BUNDLE/Contents/Resources/grant.sh" "$BUNDLE/Contents/MacOS/SleeplessCN"
+/usr/bin/codesign --force --deep --sign - "$BUNDLE"
+/usr/bin/codesign --verify --strict "$BUNDLE"
+# The only replaced output is this repository's generated build directory.
 rm -rf "$APP"
-mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
-cp "$REPO/Info.plist" "$CONTENTS/Info.plist"
-cp "$BIN_TMP/$APP_NAME" "$CONTENTS/MacOS/$APP_NAME"
-cp "$ICNS" "$CONTENTS/Resources/$APP_NAME.icns"
-chmod +x "$CONTENTS/MacOS/$APP_NAME"
-# Ship the grant + uninstall scripts inside the bundle so Homebrew-cask users (who get
-# only the .app) can run the one-time passwordless grant and a clean uninstall.
-cp "$REPO/grant.sh" "$REPO/uninstall.sh" "$CONTENTS/Resources/"
-chmod +x "$CONTENTS/Resources/grant.sh" "$CONTENTS/Resources/uninstall.sh"
-rm -rf "$BIN_TMP"
-
-# 4. Ad-hoc sign (no Apple Developer ID needed; trust comes from building it yourself).
-echo "==> Ad-hoc signing"
-codesign --force --deep --sign - "$APP"
-codesign --verify --verbose=1 "$APP" 2>&1 | sed 's/^/    /' || true
-
-echo ""
-echo "✅ Built $APP"
-echo "   Launch it:  open \"$APP\""
-echo "   For lid-closed-on-battery to actually work, run ./install.sh once to add the"
-echo "   passwordless grant (it explains exactly what it installs)."
+mv "$BUNDLE" "$APP"
+echo "Built: $APP"
+echo 'No app was installed or started, and no sleep settings were changed. Run ./install.sh to install.'
