@@ -1,6 +1,6 @@
 # Sleepless Guard
 
-[English documentation](README.md) · **源码测试版 v0.1.0-beta.1**
+[English documentation](README.md) · **未发布开发版 0.2.0-dev**；原 v0.1.0-beta.1 发布包保持不变。
 
 一个让 MacBook 按需保持运行、并在任务结束后恢复正常休眠的菜单栏工具。支持**简体中文、繁体中文、英文**，随系统语言选择。基于 Adam Boudjemaa 的 [Sleepless v1.2.7](https://github.com/Aboudjem/Sleepless)，保留 MIT 许可证，并增加独立守护程序。不是上游官方版本，也不是 Apple 产品。
 
@@ -8,7 +8,19 @@
 
 ## 语言
 
-应用根据 macOS 为应用选择的语言或系统首选语言，加载英文、简体中文或繁体中文；其他语言回退到英文。在 macOS 中修改应用语言后，请退出并重新打开应用。安装脚本与主要公开文档使用英文。翻译文件位于 `locales/`，三种语言各有完整的 27 项界面与通知文本，显示名称也已本地化。
+应用根据 macOS 为应用选择的语言或系统首选语言，加载英文、简体中文或繁体中文；其他语言回退到英文。在 macOS 中修改应用语言后，请退出并重新打开应用。安装脚本与主要公开文档使用英文。翻译文件位于 `locales/`，三种语言各有完整的 54 项界面与通知文本，包含未知状态和故障信息，显示名称也已本地化。
+
+## 状态、失败和运行前检查
+
+界面分别显示“本应用请求”“macOS 读回”“守护状态”。系统读回分为开启、关闭、未知；命令失败、输出缺失或损坏都显示未知。每次请求之后再次读取系统状态，必须命令成功且读回目标值，才算验证成功。复位失败保留错误，每轮最多尝试两次；后续周期继续重试，不会把一次正常心跳当作已经恢复。
+
+应用核对守护状态协议版本、UID、LaunchAgent 的 PID、实际解释器／脚本身份、时间戳和复位结果。守护通过主界面线程的心跳检测应用是否仍响应；旧请求在会话结束后不能静默续期，必须重新手动开启。状态文件不可写、磁盘满、旧协议和状态未知均按故障处理。
+
+“检查”提供只读报告：版本、电源状态、显示器数量、诊断代码，以及观察到的休眠／息屏阻止来源、进程名和 PID。锁屏／登录桌面、网络和网站登录明确标注未检测；界面自动化和任务完成标注未验证。报告中的“请求恢复正常休眠”是单独的显式操作。命令行只读检查：`python3 scripts/diagnostics.py`。
+
+本工具不负责截图、点击、自动签到、定时启动或从真睡眠唤醒，不绕过锁屏、验证码、Passkey 或 MFA。显示器数量不代表截图可用。任务成功必须由实际任务的结果确认。没有任务完成／失败回调；守护时限从观察到开启会话时起算，等待一夜也计入上限。守护和短计时器的较早期限会显示在剩余时间中。
+
+检测到已知其他防休眠控制器、控制台用户改变、多个控制台用户，或检测结果未知时，会结束本应用会话。只能识别已知进程，不能证明所有全局开关写入者都已找到；不会自动结束其他应用或 caffeinate。详细协议见 [STATE_PROTOCOL.md](docs/STATE_PROTOCOL.md)。
 
 ## 使用方式与保护规则
 
@@ -36,12 +48,13 @@
 
 ## 构建与安装
 
-目前支持 **Apple Silicon MacBook + macOS 26 及以上**。需要 Apple Command Line Tools 中的 `swiftc`、`codesign` 和 `/usr/bin/python3`。
+编译目标为 **Apple Silicon / macOS 26.0**。当前只允许 macOS 26／27 大版本进行本地评估；这不代表硬件与 GUI 已验收，其他大版本拒绝开启新会话，需重新验证。Intel 与多用户并发不在支持范围。需要 Apple Command Line Tools 中的 `swiftc`、`codesign` 和 `/usr/bin/python3`。
 
 ```sh
 xcode-select --install
 git clone https://github.com/stevechen256-source/Sleepless-Guard.git
 cd Sleepless-Guard
+git switch improve-observed-state  # 未发布开发分支
 ./install.sh --dry-run
 ```
 
@@ -91,6 +104,9 @@ open "$HOME/Applications/SleeplessCN.app"
 ```sh
 /usr/bin/python3 scripts/guard.py --self-test
 /usr/bin/python3 -m unittest discover -s tests -v
+mkdir -p build
+swiftc -parse-as-library PowerState.swift tests/PowerStateTests.swift -o build/power-state-tests
+build/power-state-tests
 ```
 
 测试不运行真实安装器、不修改电源设置。问题反馈请提供系统版本、芯片、电源状态和复现步骤，并移除用户名、完整家目录、凭据、私人笔记和日志。

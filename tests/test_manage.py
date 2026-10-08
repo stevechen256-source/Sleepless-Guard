@@ -33,6 +33,7 @@ class InstallationTests(unittest.TestCase):
         agent = plistlib.loads(plistlib.dumps(manage.guard_plist(self.p)))
         self.assertEqual(agent["ProgramArguments"], ["/usr/bin/python3", str(self.p["base"] / "guard.py")])
         self.assertNotIn("~", agent["ProgramArguments"][1])
+        self.assertEqual(agent['EnvironmentVariables']['PYTHONDONTWRITEBYTECODE'], '1')
 
     def test_grant_name_is_separate_from_upstream(self):
         self.assertEqual(self.p["grant"].name, "sleeplesscn-501")
@@ -95,6 +96,41 @@ class InstallationTests(unittest.TestCase):
                  patch("builtins.print"):
                 manage.main()
             run.assert_not_called()
+
+    def test_restore_requires_successful_off_readback(self):
+        for code, output in [(1, 'SleepDisabled 0'), (0, ''), (0, 'SleepDisabled 1'),
+                             (0, 'SleepDisabled 0\nSleepDisabled 1')]:
+            with self.subTest(code=code, output=output), patch.object(manage, 'run'), \
+                 patch.object(manage.subprocess, 'run', return_value=subprocess.CompletedProcess([], code, output)):
+                with self.assertRaises(RuntimeError):
+                    manage.restore_verified()
+
+    def test_verified_off_readback_is_accepted(self):
+        with patch.object(manage, 'run'), patch.object(manage.subprocess, 'run',
+                return_value=subprocess.CompletedProcess([], 0, ' SleepDisabled 0\n')):
+            manage.restore_verified()
+
+    def test_unverified_restore_keeps_guard_and_grant(self):
+        self.marker()
+        with patch.object(manage, 'run') as run, patch.object(manage.subprocess, 'run',
+                return_value=subprocess.CompletedProcess([], 0, 'SleepDisabled 1')):
+            with self.assertRaises(RuntimeError):
+                manage.uninstall(self.p, self.uid)
+        self.assertTrue(self.p['manifest'].exists())
+        self.assertEqual(run.call_count, 1)
+
+    def test_startup_requires_protocol_and_verified_off(self):
+        data = {'schema_version': 2, 'version': '0.2.0-dev', 'uid': self.uid, 'updated': 100,
+                'health': 'healthy', 'observation': {'state': 'off', 'exit_code': 0},
+                'last_reset': {'verified': True, 'exit_code': 0,
+                               'observation': {'state': 'off', 'exit_code': 0}}}
+        self.assertTrue(manage.startup_verified(data, self.uid, 100))
+        for key, value in [('schema_version', 1), ('uid', self.uid + 1), ('updated', 101.1),
+                           ('updated', 80), ('health', 'fault'), ('last_reset', None),
+                           ('observation', {'state': 'unknown', 'exit_code': 0})]:
+            with self.subTest(key=key):
+                self.assertFalse(manage.startup_verified(dict(data, **{key: value}), self.uid, 100))
+        self.assertFalse(manage.startup_verified({}, self.uid, 100))
 
 
 if __name__ == "__main__":

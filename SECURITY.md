@@ -10,15 +10,21 @@ The menu-bar app and Python guard run as the logged-in user. The only passwordle
 
 The grant is a permission for the **user**, not only this app. Other software running as the same user can invoke those exact two commands. A person who can already modify your user-owned app or scripts can affect their behavior; administrator credentials and the OS remain part of the trust boundary.
 
+The schema/UID/LaunchAgent/process checks reject stale or inconsistent state; they do not authenticate against a malicious process under the same user. A main-run-loop heartbeat detects an unresponsive app, not a stuck AI job. Successful sleep inhibition cannot establish screenshot, input, network, website-session, or task availability.
+
 ## Global-state conflicts
 
 `disablesleep` has no per-application ownership. Guard startup, app quit, error recovery, and uninstall request `disablesleep 0`. These actions may cancel a session created by another tool. Do not operate multiple controllers at the same time, including upstream Sleepless or another logged-in user's controller. The original upstream `/etc/sudoers.d/sleepless-disablesleep` file is intentionally never removed. Its continued presence may still authorize `pmset` after this derivative is uninstalled.
 
 There is no continuous privileged root daemon and no networking code in the guard. The guard runs once per logged-in user via LaunchAgent and writes local status, timestamps, power percentage, and short event reasons. Local log files are not meant for publication. The event log is rotated around 128 KiB; OS/Python errors may also appear in the local launch/error logs.
 
+Read-only diagnostics identify known controllers and console-user conflicts conservatively. Unknown results end the session; this can interrupt work when a check fails. It is not proof of exclusive control. The assertion list excludes raw assertion descriptions and full command arguments. It exposes local process names and numeric IDs, which still deserve review before sharing. Lock/login and network checks are not implemented, and diagnostics make no outbound request.
+
 ## Failure behavior
 
 The guard requests normal sleep if the app disappears, the power status cannot be read, battery charge reaches 30%, the session deadline arrives, or an AC-started session is unplugged. It also resets the flag when it starts or receives a normal termination signal. `SIGKILL` cannot run cleanup; launchd is expected to restart the guard, whose startup resets the flag. These are best-effort mechanisms dependent on scheduling, working permissions, a functioning OS, and an enabled LaunchAgent.
+
+Command acceptance, observed state, and guard health are separate. Each reset round has at most two attempts and retains the failure until command success and OFF readback agree. A state/log write failure does not suppress recovery attempts. A disabled LaunchAgent cannot restart itself; the app refuses new sessions and attempts OFF for an active request, but an OS or simultaneous-process failure can still defeat recovery. See [STATE_PROTOCOL.md](docs/STATE_PROTOCOL.md).
 
 This does not add temperature monitoring, disk protection, battery-health prediction, lid sensors, or guaranteed screen darkness. Another application may hold its own display assertion. End the task and verify sleep before carrying the Mac in a bag. The undocumented `disablesleep` behavior can change with macOS updates.
 

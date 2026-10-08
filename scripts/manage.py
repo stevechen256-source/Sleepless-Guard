@@ -36,6 +36,7 @@ def guard_plist(p):
         "ThrottleInterval": 2,
         "ExitTimeOut": 10,
         "ProcessType": "Background",
+        "EnvironmentVariables": {"PYTHONDONTWRITEBYTECODE": "1"},
         "StandardOutPath": str(p["base"] / "launch.log"),
         "StandardErrorPath": str(p["base"] / "error.log"),
     }
@@ -43,6 +44,33 @@ def guard_plist(p):
 
 def run(args, check=True, timeout=30):
     return subprocess.run(args, check=check, timeout=timeout)
+
+
+def restore_verified():
+    """Do not remove protection on a successful command with an unverified result."""
+    run(["/usr/bin/sudo", "-n", "/usr/bin/pmset", "-a", "disablesleep", "0"], timeout=4)
+    result = subprocess.run(["/usr/bin/pmset", "-g"], capture_output=True, text=True, timeout=4)
+    lines = [line.split() for line in result.stdout.splitlines()
+             if line.split() and line.split()[0].lower() == 'sleepdisabled']
+    if result.returncode != 0 or lines != [["SleepDisabled", "0"]]:
+        raise RuntimeError("Sleep restoration could not be verified; protection files were retained.")
+
+
+def startup_verified(data, uid, now):
+    """A recent JSON file alone does not establish successful guard startup."""
+    try:
+        return (data['schema_version'] == 2 and data['version'] == '0.2.0-dev'
+                and data['uid'] == uid and -1 <= now - data['updated'] < 15
+                and data['health'] == 'healthy' and data['observation']['state'] == 'off'
+                and data['observation']['exit_code'] == 0
+                and data['observation'].get('error') is None
+                and data['last_reset']['verified'] is True
+                and data['last_reset']['exit_code'] == 0
+                and data['last_reset'].get('error') is None
+                and data['last_reset']['observation']['state'] == 'off'
+                and data['last_reset']['observation']['exit_code'] == 0)
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def refuse_symlinks(p, home):
@@ -90,6 +118,7 @@ def install(p, uid):
         p["agent"].parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(source, p["app"])
         shutil.copy2(ROOT / "scripts/guard.py", p["base"] / "guard.py")
+        shutil.copy2(ROOT / "scripts/diagnostics.py", p["base"] / "diagnostics.py")
         p["manifest"].write_text(json.dumps({"schema": 1, "application_id": APP_ID, "uid": uid}, indent=2) + "\n")
         p["agent"].write_bytes(plistlib.dumps(guard_plist(p)))
         p["agent"].chmod(0o600)
@@ -101,16 +130,18 @@ def install(p, uid):
             status = p["base"] / "status.json"
             if status.exists():
                 data = json.loads(status.read_text())
-                if time.time() - data.get("updated", 0) < 15:
+                if startup_verified(data, uid, time.time()):
                     break
             time.sleep(0.5)
         else:
             raise RuntimeError("The guard did not report a healthy startup.")
     except Exception:
         # The installation was verified absent above; only newly created owned paths are removed.
+        # If OFF cannot be verified, retain the guard and grant for recovery.
+        restore_verified()
         if loaded:
             run(["/bin/launchctl", "bootout", "gui/" + str(uid) + "/" + GUARD_ID], check=False)
-        run(["/usr/bin/sudo", "-n", "/usr/bin/pmset", "-a", "disablesleep", "0"], check=False)
+        restore_verified()
         p["agent"].unlink(missing_ok=True)
         if p["app"].exists():
             shutil.rmtree(p["app"])
@@ -125,7 +156,7 @@ def install(p, uid):
 def uninstall(p, uid):
     verify_owned(p, uid)
     # Do not remove the guard or its grant until normal sleep has been requested successfully.
-    run(["/usr/bin/sudo", "-n", "/usr/bin/pmset", "-a", "disablesleep", "0"])
+    restore_verified()
     app = p["app"] / "Contents/MacOS/SleeplessCN"
     if app.exists():
         run([str(app), "--unregister-login"])
@@ -137,13 +168,13 @@ def uninstall(p, uid):
     if str(app) in {line.strip() for line in result.stdout.splitlines()}:
         raise RuntimeError("The app is still running. Quit it and retry; protection has been retained.")
     run(["/bin/launchctl", "bootout", "gui/" + str(uid) + "/" + GUARD_ID], check=False)
-    run(["/usr/bin/sudo", "-n", "/usr/bin/pmset", "-a", "disablesleep", "0"])
+    restore_verified()
     run(["/bin/bash", str(ROOT / "grant.sh"), "--revoke"], timeout=None)
     p["agent"].unlink(missing_ok=True)
     if p["app"].exists():
         shutil.rmtree(p["app"])
     # Delete only known files. Preserve unexpected user-created data in the support directory.
-    for name in ("guard.py", "guard.lock", "status.json", "status.tmp", "events.log", "events.previous.log", "launch.log", "error.log", "installation.json"):
+    for name in ("guard.py", "diagnostics.py", "app-heartbeat.json", "guard.lock", "status.json", "status.tmp", "events.log", "events.previous.log", "launch.log", "error.log", "installation.json"):
         item = p["base"] / name
         if item.is_file() or item.is_symlink():
             item.unlink()

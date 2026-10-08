@@ -9,8 +9,8 @@
   <key>CFBundleLocalizations</key><array><string>en</string><string>zh-Hans</string><string>zh-Hant</string></array>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleIconFile</key><string>Sleepless</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>0.2.0</string>
+  <key>CFBundleVersion</key><string>2</string>
   <key>LSMinimumSystemVersion</key><string>26.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHumanReadableCopyright</key><string>Based on Sleepless. Copyright © 2026 Adam Boudjemaa. MIT License.</string>

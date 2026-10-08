@@ -46,7 +46,7 @@ private func L(_ key: String, _ arguments: CVarArg...) -> String {
 }
 
 // MARK: - Tunables
-private let pollInterval: TimeInterval = 60
+private let pollInterval: TimeInterval = 5
 // Battery-floor config (user-adjustable via the popover slider; persisted in UserDefaults).
 private let floorKey = "batteryFloorPercent"
 private let floorDefault = 30
@@ -166,6 +166,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var clickMonitor: Any?
     private var batteryFloorPercent = floorDefault
     private var isOn = false
+    private var observation = PowerObservation(state: .unknown, exit_code: -1, error: "not_sampled", sampled_at: 0)
+    private var guardState = GuardAssessment(report: nil, fault: "not_sampled")
+    private var requestedState = "none"
+    private var requestError: String?
+    private let instanceID = UUID().uuidString
+    private var requestID = UUID().uuidString
+    private var heartbeatOK = false
+    private var heartbeatTimer: Timer?
+    private let supportDirectory = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/SleeplessCN")
     private var userForcedOn = false   // user deliberately turned it on; honor over the Low Power Mode auto-off (the hard battery floor still wins)
 
     // Auto-off timer (in-memory; dies on quit, never survives a reboot)
@@ -175,7 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var timerEndDate: Date?
 
     private let popoverWidth: CGFloat = 360
-    private let popoverHeight: CGFloat = 432
+    private let popoverHeight: CGFloat = 558
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -191,9 +201,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentSize = NSSize(width: popoverWidth, height: popoverHeight)
         popover.contentViewController = makeContentController()
 
+        publishHeartbeat()
         refresh()   // reflect TRUE system state on launch (never a stale assumption)
         timer = Timer.scheduledTimer(timeInterval: pollInterval, target: self,
                                      selector: #selector(poll), userInfo: nil, repeats: true)
+        let heartbeat = Timer(timeInterval: 5, target: self, selector: #selector(heartbeatTick), userInfo: nil, repeats: true)
+        RunLoop.main.add(heartbeat, forMode: .common)
+        RunLoop.main.add(heartbeat, forMode: .modalPanel)
+        heartbeatTimer = heartbeat
     }
 
     // MARK: - Popover content (native NSSwitch toggle, macOS-aligned)
@@ -235,7 +250,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let swH = swProto.height > 0 ? swProto.height : 21
 
         // GROUP 1 — main switch + state caption
-        let g1y: CGFloat = 46, g1h: CGFloat = 84
+        let g1y: CGFloat = 46, g1h: CGFloat = 132
         let g1 = makeCard(NSRect(x: pad, y: g1y, width: contentW, height: g1h))
         mainCard = g1
         let rowLabel = makeLabel(L("keepAwake.label"), font: .systemFont(ofSize: 13), color: .labelColor)
@@ -247,10 +262,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         toggleSwitch.frame = NSRect(x: contentW - ci - swW, y: ci + (22 - swH) / 2, width: swW, height: swH)
         g1.addSubview(toggleSwitch)
         captionLabel = makeLabel("", font: .systemFont(ofSize: 12), color: .secondaryLabelColor)
-        captionLabel.frame = NSRect(x: ci, y: ci + 30, width: cw, height: 32)
+        captionLabel.frame = NSRect(x: ci, y: ci + 30, width: cw, height: 80)
         captionLabel.usesSingleLineMode = false
         captionLabel.lineBreakMode = .byWordWrapping
-        captionLabel.maximumNumberOfLines = 2
+        captionLabel.maximumNumberOfLines = 5
         captionLabel.cell?.wraps = true
         g1.addSubview(captionLabel)
 
@@ -321,6 +336,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         quit.frame = NSRect(x: W - pad - qs.width, y: g4y + g4h + 12, width: qs.width, height: qs.height)
         root.addSubview(quit)
 
+        let diagnose = NSButton(title: L("diagnostics.button"), target: self, action: #selector(showDiagnostics))
+        diagnose.bezelStyle = .rounded
+        diagnose.frame = NSRect(x: pad, y: g4y + g4h + 12, width: 106, height: qs.height)
+        root.addSubview(diagnose)
+        let boundary = makeLabel(L("automation.boundary"), font: .systemFont(ofSize: 11), color: .secondaryLabelColor)
+        boundary.frame = NSRect(x: pad, y: g4y + g4h + 49, width: contentW, height: 46)
+        boundary.usesSingleLineMode = false
+        boundary.lineBreakMode = .byWordWrapping
+        boundary.maximumNumberOfLines = 3
+        root.addSubview(boundary)
+
         let vc = NSViewController()
         vc.view = root
         return vc
@@ -363,22 +389,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func switchToggled(_ sender: NSSwitch) {
-        if performToggle(wantOn: sender.state == .on) {
-            sender.state = .off   // setup needed / failed: reflect reality (performToggle notified)
-        }
+        performToggle(wantOn: sender.state == .on)
     }
 
-    // Core keep-awake toggle, decoupled from the UI sender. Returns true ONLY when the user
-    // must act (the passwordless grant is missing and setup did not complete) so the caller can
-    // reflect OFF. The decision to prompt is made on the REAL sudo result (see setDisableSleep),
-    // never by re-reading SleepDisabled: a successful sudo means the command ran, even if a
-    // safety net (Low Power Mode / battery floor) legitimately turns sleep back on afterwards —
-    // which must NOT be mistaken for "permission missing" and trigger a password prompt. This
-    // unobservable, state-proxy decision is what made earlier releases re-prompt spuriously.
+    // A command request and a verified system readback are distinct. Only an actual
+    // sudo denial may prompt for the existing narrowly scoped grant.
     @discardableResult
     private func performToggle(wantOn: Bool) -> Bool {
-        if wantOn && !guardIsHealthy() {
+        publishHeartbeat()
+        guardState = readGuardAssessment()
+        if wantOn && (!guardState.healthy || !heartbeatOK || !compatibleOS) {
             notify(L("guard.notReady"))
+            refresh()
             return true
         }
         var result = setDisableSleep(wantOn)
@@ -388,26 +410,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if installGrantViaAuth() { result = setDisableSleep(true) }
             if result != .ok {
                     notify(L("permission.notReady"))
+                refresh()
                 return true
             }
         }
         // A deliberate, successful turn-on wins over the Low Power Mode auto-off (hard floor still wins).
         userForcedOn = wantOn && result == .ok
+        if result != .ok { notify(L("request.failed")) }
         refresh()                              // applies UI + safety nets; switch reflects reality
-        if isOn, autoOffMinutes > 0 { startKeepAwakeTimer(minutes: autoOffMinutes) }
+        if result == .ok, isOn, autoOffMinutes > 0 { startKeepAwakeTimer(minutes: autoOffMinutes) }
         return false
     }
 
-    private func guardIsHealthy() -> Bool {
-        let path = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/SleeplessCN/status.json")
-        guard let data = try? Data(contentsOf: path),
-              let status = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let updated = status["updated"] as? Double,
-              let pid = status["pid"] as? Int,
-              pid > 1, pid <= Int(Int32.max) else { return false }
-        let age = Date().timeIntervalSince1970 - updated
-        return age >= -1 && age < 30 && kill(pid_t(pid), 0) == 0
+    private var compatibleOS: Bool {
+        // This development revision requires renewed acceptance for every new major OS.
+        [26, 27].contains(ProcessInfo.processInfo.operatingSystemVersion.majorVersion)
+    }
+
+    private func publishHeartbeat() {
+        let data: [String: Any] = ["schema_version": 1, "version": guardProtocolVersion,
+            "pid": Int(getpid()), "uid": Int(getuid()), "updated": Date().timeIntervalSince1970,
+            "instance_id": instanceID, "request_id": requestID, "executable": Bundle.main.executablePath ?? "",
+            "requested_state": requestedState]
+        do {
+            // Installation owns this directory. A moved/uninstalled app must not recreate it.
+            let bytes = try JSONSerialization.data(withJSONObject: data)
+            try bytes.write(to: supportDirectory.appendingPathComponent("app-heartbeat.json"), options: .atomic)
+            heartbeatOK = true
+        } catch { heartbeatOK = false }
+    }
+
+    @objc private func heartbeatTick() { publishHeartbeat() }
+
+    private func readGuardAssessment() -> GuardAssessment {
+        let data = try? Data(contentsOf: supportDirectory.appendingPathComponent("status.json"))
+        let decoded = data.flatMap { try? JSONDecoder().decode(GuardReport.self, from: $0) }
+        let job = BoundedCommand.run("/bin/launchctl", ["print", "gui/\(getuid())/io.github.sleeplesscn.guard"])
+        var jobPID: Int?
+        if job.exitCode == 0 {
+            let ids = job.output.split(separator: "\n").compactMap { line -> Int? in
+                let parts = line.split(whereSeparator: { $0.isWhitespace })
+                return parts.count == 3 && parts[0] == "pid" && parts[1] == "=" ? Int(parts[2]) : nil
+            }
+            if ids.count == 1 { jobPID = ids[0] }
+        }
+        var processUID: Int?, arguments: String?
+        if let pid = decoded?.pid, pid > 1, pid <= Int(Int32.max) {
+            let result = BoundedCommand.run("/bin/ps", ["-ww", "-p", String(pid), "-o", "uid=,args="])
+            let parts = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                .split(maxSplits: 1, whereSeparator: { $0.isWhitespace })
+            if result.exitCode == 0, parts.count == 2 {
+                processUID = Int(parts[0]); arguments = String(parts[1])
+            }
+        }
+        return GuardAssessment.evaluate(data: data, now: Date().timeIntervalSince1970, uid: Int(getuid()),
+            script: supportDirectory.appendingPathComponent("guard.py").path,
+            launchPID: jobPID, processUID: processUID, processArguments: arguments)
     }
 
     // Install the one-time scoped grant via a SINGLE native macOS authorization (the
@@ -499,12 +557,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func keepAwakeTimerFired() {
-        setDisableSleep(false)
+        let result = setDisableSleep(false)
         cancelKeepAwakeTimer()
         autoOffMinutes = 0
         autoOffControl?.selectedSegment = 0
         applyUI(on: readSleepDisabled())
-        notify(L("timer.finished"))
+        notify(L(result == .ok ? "timer.finished" : "request.failed"))
     }
 
     private func startCountdownTicker() {
@@ -516,8 +574,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func countdownTick() { updateCountdownLabel() }
 
     private func updateCountdownLabel() {
-        guard let end = timerEndDate, isOn else { countdownLabel?.stringValue = ""; return }
-        let remaining = Int(end.timeIntervalSinceNow.rounded())
+        guard isOn else { countdownLabel?.stringValue = ""; return }
+        var deadlines: [Double] = []
+        if let end = timerEndDate { deadlines.append(end.timeIntervalSinceNow) }
+        if guardState.healthy, let report = guardState.report, let seconds = report.remaining_seconds {
+            deadlines.append(seconds - max(0, Date().timeIntervalSince1970 - report.updated))
+        }
+        guard let deadline = deadlines.min() else { countdownLabel?.stringValue = L("timer.unknown"); return }
+        let remaining = max(0, Int(deadline.rounded(.up)))
         guard remaining > 0 else { countdownLabel?.stringValue = ""; return }
         let h = remaining / 3600, m = (remaining % 3600) / 60, s = remaining % 60
         let t = h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
@@ -542,42 +606,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Core state sync
     @objc private func refresh() {
-        let on = readSleepDisabled()
-        if on && !guardIsHealthy() {
+        publishHeartbeat()
+        guardState = readGuardAssessment()
+        let sampled = readSleepDisabled()
+        if sampled.state == .off && isOn { requestedState = "off"; userForcedOn = false }
+        if requestedState == "on" && (!guardState.healthy || !heartbeatOK || !compatibleOS || sampled.state == .unknown) {
             setDisableSleep(false)
             applyUI(on: readSleepDisabled())
+            publishHeartbeat()
             return
         }
-        applyUI(on: on)
-        if on { enforceSafetyNets() }
+        applyUI(on: sampled)
+        if sampled.state == .on { enforceSafetyNets() }
+        publishHeartbeat()
     }
 
-    private func applyUI(on: Bool) {
+    private func applyUI(on sample: PowerObservation) {
+        observation = sample
+        let on = sample.state == .on
         isOn = on
-        if !on { cancelKeepAwakeTimer() }   // going OFF clears any countdown/timer
+        if sample.state == .off { cancelKeepAwakeTimer() }
         // ARMED = kept awake while actively discharging on battery, so the
         // auto-off safety net is live. Distinct menu-bar glyph (cup + dot).
         var armed = false
-        if on {
-            let (onBattery, discharging, _) = batteryStatus()
-            armed = onBattery && discharging
-        }
+        if on { armed = guardState.report?.source == "battery" }
+        let fault = sample.state == .unknown || !guardState.healthy || requestError != nil || !heartbeatOK || !compatibleOS
         if let button = statusItem.button {
-            let newImage = on ? (armed ? armedGlyph : onGlyph) : offGlyph
+            let newImage = fault ? (NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: L("state.unknown")) ?? offGlyph)
+                : (on ? (armed ? armedGlyph : onGlyph) : offGlyph)
+            newImage.isTemplate = true
             if button.image !== newImage {   // state (cup shape) changed -> swap + pulse
                 button.image = newImage
                 pulseStatusItem()
             }
-            button.toolTip = on
+            button.toolTip = fault ? L("request.checkStatus") : on
                 ? (armed
                     ? L("status.batteryTooltip", batteryFloorPercent)
                     : L("status.powerTooltip"))
                 : L("status.offTooltip")
         }
         toggleSwitch?.state = on ? .on : .off
+        toggleSwitch?.isEnabled = on || (sample.state == .off && guardState.healthy && heartbeatOK && compatibleOS)
         // Brand-violet accent communicates the privileged "awake" state at a glance.
-        mainCard?.active = on
-        headerMark?.contentTintColor = on ? brandAccentSoft : .labelColor
+        mainCard?.active = on && !fault && guardState.report?.observation.state == .on
+        headerMark?.contentTintColor = fault ? .systemOrange : on ? brandAccentSoft : .labelColor
+        captionLabel?.textColor = requestError != nil ? .systemRed : fault ? .systemOrange : .secondaryLabelColor
         renderText()
         updateCountdownLabel()
     }
@@ -585,9 +658,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Update text labels only (no pmset subprocess; safe to call on every slider tick).
     private func renderText() {
         floorValueLabel?.stringValue = "\(batteryFloorPercent)%"
-        captionLabel?.stringValue = isOn
-            ? L("status.onCaption", batteryFloorPercent)
-            : L("status.offCaption")
+        let guardLabel = !compatibleOS ? L("guard.unsupportedOS") : !heartbeatOK ? L("guard.heartbeatFailed") :
+            !guardState.healthy ? L("guard.fault") : guardState.report?.observation.state != observation.state ? L("guard.pending") : L("guard.healthy")
+        captionLabel?.stringValue = [
+            L("status.request", L("state." + requestedState)),
+            L("status.observed", L("state." + observation.state.rawValue)),
+            L("status.guard", guardLabel),
+            requestError == nil ? L("status.sleepBoundary") : L("request.checkStatus")
+        ].joined(separator: "\n")
+        captionLabel?.toolTip = [guardState.fault, requestError].compactMap { $0 }.joined(separator: "; ")
     }
 
     @objc private func floorSliderChanged(_ sender: NSSlider) {
@@ -599,100 +678,121 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         renderText()
     }
 
-    // Result of the privileged keep-awake toggle, based on sudo's REAL exit status — not on a
-    // second, independent state read. `.ok` = the command ran; `.grantMissing` = the passwordless
-    // sudoers grant isn't installed (sudo -n refused), the one case that warrants setup; `.failed`
-    // = any other error. Using sudo's own result (instead of re-reading SleepDisabled) is the fix:
-    // a safety net flipping sleep back on must never look like "permission missing" and re-prompt.
+    // `.ok` requires both exit code zero and the expected power-state readback.
     private enum ToggleResult: Equatable { case ok, grantMissing, failed(String) }
 
     @discardableResult
     private func setDisableSleep(_ on: Bool) -> ToggleResult {
-        // sudo -n: never prompt (GUI app has no TTY). The exact argument vector matches the
-        // NOPASSWD sudoers grant, so this runs without a password.
-        let (exit, _, err) = runPrivileged(["-n", "/usr/bin/pmset", "-a", "disablesleep", on ? "1" : "0"])
+        requestID = UUID().uuidString
+        requestedState = on ? "on" : "off"
+        publishHeartbeat()
+        if on && !heartbeatOK {
+            requestedState = "off"
+            requestError = "heartbeat_write_failed"
+            return .failed("heartbeat_write_failed")
+        }
+        let command = BoundedCommand.run("/usr/bin/sudo", ["-n", "/usr/bin/pmset", "-a", "disablesleep", on ? "1" : "0"])
+        observation = readSleepDisabled()
+        let exit = command.exitCode, err = command.error
         let result: ToggleResult
-        if exit == 0 {
+        if verifiedRequest(command, observation: observation, wanted: on ? .on : .off) {
             result = .ok
+            requestError = nil
         } else if err.range(of: "a password is required", options: .caseInsensitive) != nil
                || err.range(of: "not allowed", options: .caseInsensitive) != nil
                || err.range(of: "may not run", options: .caseInsensitive) != nil {
             result = .grantMissing   // grant absent/removed -> sudo -n refused to run passwordless
         } else {
-            result = .failed(err.isEmpty ? "exit \(exit)" : err.trimmingCharacters(in: .whitespacesAndNewlines))
+            result = .failed("command_\(exit)_observed_\(observation.state.rawValue)")
+        }
+        if result != .ok {
+            requestError = "command_\(exit)_observed_\(observation.state.rawValue)"
+            requestedState = "off" // Never leave an unsuccessful enable armed in the heartbeat.
+            publishHeartbeat()
         }
         return result
     }
 
-    // Run a privileged command via sudo, capturing exit status + stderr (which the generic
-    // runCapture discards). stdin is /dev/null so a GUI process with no controlling TTY can
-    // never block on a prompt. This is what lets the app KNOW whether its own toggle worked.
-    private func runPrivileged(_ args: [String]) -> (exit: Int32, out: String, err: String) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        process.arguments = args
-        var env = ProcessInfo.processInfo.environment
-        env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
-        env["LC_ALL"] = "C"
-        env["HOME"] = FileManager.default.homeDirectoryForCurrentUser.path
-        process.environment = env
-        let outPipe = Pipe(), errPipe = Pipe()
-        process.standardOutput = outPipe
-        process.standardError = errPipe
-        process.standardInput = FileHandle.nullDevice
-        do { try process.run() }
-        catch {
-            NSLog("Sleepless: failed to launch sudo: %@", error.localizedDescription)
-            return (-1, "", "launch failed: \(error.localizedDescription)")
-        }
-        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return (process.terminationStatus,
-                String(data: outData, encoding: .utf8) ?? "",
-                String(data: errData, encoding: .utf8) ?? "")
-    }
-
     // MARK: - Battery + Low-Power-Mode safety nets (silent; no extra UI) — Feature 3
     private func enforceSafetyNets() {
-        let (onBattery, discharging, percent) = batteryStatus()
-        guard onBattery, discharging else { return }
+        guard let report = guardState.report, report.source == "battery" else { return }
+        let percent = report.battery_percent
         // Hard battery floor ALWAYS wins, even over a deliberate turn-on: never drain to empty.
         if percent <= batteryFloorPercent {
-            setDisableSleep(false); userForcedOn = false
+            let result = setDisableSleep(false); userForcedOn = false
             applyUI(on: readSleepDisabled())
-            notify(L("batteryFloor.reached", percent))
+            notify(result == .ok ? L("batteryFloor.reached", percent) : L("request.failed"))
             return
         }
         // Low Power Mode auto-off, UNLESS the user deliberately chose to keep awake this session.
         if ProcessInfo.processInfo.isLowPowerModeEnabled && !userForcedOn {
-            setDisableSleep(false)
+            let result = setDisableSleep(false)
             applyUI(on: readSleepDisabled())
-            notify(L("lowPowerMode.enabled"))
+            notify(L(result == .ok ? "lowPowerMode.enabled" : "request.failed"))
         }
     }
 
     // MARK: - Readers (no root needed)
-    private func readSleepDisabled() -> Bool {
-        let out = runCapture("/usr/bin/pmset", ["-g"])
-        for line in out.split(whereSeparator: { $0 == "\n" }) {
-            if line.range(of: "SleepDisabled", options: .caseInsensitive) != nil {
-                let toks = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
-                if let last = toks.last { return last == "1" }
-            }
-        }
-        return false   // line absent -> OFF
+    private func readSleepDisabled() -> PowerObservation {
+        PowerObservation.parse(BoundedCommand.run("/usr/bin/pmset", ["-g"]), now: Date().timeIntervalSince1970)
     }
 
-    private func batteryStatus() -> (onBattery: Bool, discharging: Bool, percent: Int) {
-        let out = runCapture("/usr/bin/pmset", ["-g", "batt"])
-        let onBattery = out.contains("Battery Power")
-        let discharging = out.range(of: "discharging", options: .caseInsensitive) != nil
-        var percent = 100
-        for tok in out.split(whereSeparator: { " \t\n;".contains($0) }) {
-            if tok.hasSuffix("%"), let v = Int(tok.dropLast()) { percent = v; break }
+    @objc private func showDiagnostics() {
+        publishHeartbeat()
+        guardState = readGuardAssessment()
+        applyUI(on: readSleepDisabled())
+        let script = Bundle.main.resourceURL?.appendingPathComponent("diagnostics.py").path ?? ""
+        let result = BoundedCommand.run("/usr/bin/python3", [script], timeout: 18)
+        var blockers: [String] = []
+        if result.exitCode == 0, let data = result.output.data(using: .utf8),
+           let report = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           let assertions = report["assertions"] as? [String: Any],
+           assertions["available"] as? Bool == true,
+           let entries = assertions["entries"] as? [[String: Any]] {
+            blockers = entries.prefix(12).map { entry in
+                "\(entry["process"] as? String ?? "?") (PID \(entry["pid"] as? Int ?? 0)): \(entry["type"] as? String ?? "?")"
+            }
+            if blockers.isEmpty { blockers = [L("diagnostics.noAssertions")] }
+        } else { blockers = [L("state.unknown")] }
+        let alert = NSAlert()
+        alert.messageText = L("diagnostics.title")
+        alert.alertStyle = .informational
+        let code = [guardState.fault, requestError, guardState.report?.reason].compactMap { $0 }.joined(separator: "; ")
+        let reportText = [
+            "App: \(guardProtocolVersion) · Guard: \(guardState.report?.version ?? "?")",
+            "macOS: \(ProcessInfo.processInfo.operatingSystemVersionString)",
+            captionLabel?.stringValue ?? "",
+            L("diagnostics.power", guardState.report?.source ?? "unknown", guardState.report?.battery_percent ?? -1),
+            L("diagnostics.displays", NSScreen.screens.count),
+            L("diagnostics.unchecked"),
+            L("diagnostics.assertions") + "\n" + blockers.joined(separator: "\n"),
+            L("diagnostics.code") + " " + (code.isEmpty ? "—" : code),
+            L("diagnostics.recovery") + "\nsudo -n /usr/bin/pmset -a disablesleep 0"
+        ].joined(separator: "\n\n")
+        alert.informativeText = L("automation.boundary")
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 480, height: 320))
+        scroll.hasVerticalScroller = true
+        let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 460, height: 320))
+        text.string = reportText
+        text.isEditable = false
+        text.isSelectable = true
+        text.isVerticallyResizable = true
+        text.isHorizontallyResizable = false
+        text.autoresizingMask = [.width]
+        text.textContainer?.widthTracksTextView = true
+        text.font = .systemFont(ofSize: 12)
+        text.textContainerInset = NSSize(width: 8, height: 8)
+        scroll.documentView = text
+        alert.accessoryView = scroll
+        alert.addButton(withTitle: L("diagnostics.close"))
+        alert.addButton(withTitle: L("diagnostics.restore"))
+        // Keep the main run-loop heartbeat alive while this modal sheet is open.
+        publishHeartbeat()
+        if alert.runModal() == .alertSecondButtonReturn {
+            let restored = setDisableSleep(false)
+            notify(L(restored == .ok ? "restore.verified" : "request.failed"))
         }
-        return (onBattery, discharging, percent)
+        refresh()
     }
 
     // MARK: - Notification (mirrors Nexus' osascript approach)
@@ -704,26 +804,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Process runner (explicit PATH/HOME; captures stdout)
     @discardableResult
     private func runCapture(_ launchPath: String, _ args: [String]) -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: launchPath)
-        process.arguments = args
-        var env = ProcessInfo.processInfo.environment
-        env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
-        env["HOME"] = FileManager.default.homeDirectoryForCurrentUser.path
-        process.environment = env
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-        do { try process.run() }
-        catch { NSLog("Sleepless: failed to launch %@: %@", launchPath, error.localizedDescription); return "" }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return String(data: data, encoding: .utf8) ?? ""
+        BoundedCommand.run(launchPath, args).output
     }
 
     // Local safety patch: ordinary Quit must release the global switch too.
     func applicationWillTerminate(_ notification: Notification) {
-        setDisableSleep(false)
+        if setDisableSleep(false) != .ok { notify(L("request.failed")) }
     }
     @objc private func quit() { NSApp.terminate(nil) }
 }
@@ -739,7 +825,10 @@ enum SleeplessApp {
                 "title": L("app.title"),
                 "toggle": L("keepAwake.label"),
                 "countdown": L("timer.remaining", "1:02:03"),
-                "battery": L("batteryFloor.reached", 30)
+                "battery": L("batteryFloor.reached", 30),
+                "unknown": L("state.unknown"),
+                "failure": L("request.failed"),
+                "boundary": L("automation.boundary")
             ]
             if let data = try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]),
                let text = String(data: data, encoding: .utf8) { print(text) }
