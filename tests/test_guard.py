@@ -1,5 +1,6 @@
 """All process/power calls are mocked; these tests never change macOS settings."""
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
 import unittest
@@ -68,13 +69,13 @@ class GuardReaderTests(unittest.TestCase):
     def test_reads_expected_macos_output(self):
         outputs = [(0, "System-wide power settings:\n SleepDisabled 1\n"),
                    (0, "Now drawing from 'Battery Power'\n -InternalBattery-0 61%; discharging;"),
-                   (0, guard.APP + "\n/usr/bin/python3\n")]
+                   (0, f"123 {os.getuid()} {guard.APP}\n456 0 /usr/bin/python3\n")]
         with patch.object(guard, "command", side_effect=outputs):
             self.assertEqual(guard.read_state(), (True, "battery", 61, True))
 
     def test_other_application_does_not_count_as_our_app(self):
         outputs = [(0, "SleepDisabled 1"), (0, "'AC Power' 85%;"),
-                   (0, "/Applications/Sleepless.app/Contents/MacOS/Sleepless\n")]
+                   (0, f"123 {os.getuid()} /Applications/Sleepless.app/Contents/MacOS/Sleepless\n")]
         with patch.object(guard, "command", side_effect=outputs):
             self.assertEqual(guard.read_state(), (True, "ac", 85, False))
 
@@ -86,14 +87,19 @@ class GuardReaderTests(unittest.TestCase):
         with patch.object(guard.subprocess, "run", side_effect=subprocess.TimeoutExpired("test", 4)):
             self.assertEqual(guard.command(["placeholder"]), (-1, ""))
 
+    def test_invalid_command_encoding_is_nonfatal(self):
+        with patch.object(guard.subprocess, "run", side_effect=UnicodeError("invalid output")):
+            self.assertEqual(guard.command(["placeholder"]), (-1, ""))
+
     def test_reset_can_only_disable_keep_awake(self):
-        with patch.object(guard, "command", return_value=(0, "")) as command, patch.object(guard, "log"):
-            self.assertTrue(guard.reset_sleep("test"))
-        command.assert_called_once_with(["/usr/bin/sudo", "-n", "/usr/bin/pmset", "-a", "disablesleep", "0"])
+        with patch.object(guard, "command", side_effect=[(0, ""), (0, "SleepDisabled 0")]) as command, patch.object(guard, "log"):
+            self.assertTrue(guard.reset_sleep("test")['verified'])
+        self.assertEqual(command.call_args_list[0].args[0],
+                         ["/usr/bin/sudo", "-n", "/usr/bin/pmset", "-a", "disablesleep", "0"])
 
     def test_failed_reset_is_not_reported_successful(self):
         with patch.object(guard, "command", return_value=(1, "")), patch.object(guard, "log"):
-            self.assertFalse(guard.reset_sleep("test"))
+            self.assertFalse(guard.reset_sleep("test")['verified'])
 
 
 if __name__ == "__main__":

@@ -1,3 +1,13 @@
+# Unreleased — 0.2.0-dev
+
+- Separate app requests, three-state macOS observations, and guard health; read back every power-setting request before reporting verification.
+- Versioned guard/app heartbeats with live identity checks, app responsiveness, retained reset failures, bounded retries, and consumed request IDs.
+- Read-only external-assertion/controller diagnostics, explicit automation limits, and visible guard deadlines in all three languages.
+- Installation, removal and manual recovery require OFF readback; grants and protection are retained if restoration cannot be verified.
+- 95 Python tests, 18 guard policy cases, 48 Swift checks, and build/localization checks pass. Clean installation/removal, GUI layout and physical-lid/task acceptance are still pending.
+
+This development work has not replaced the existing release or the locally installed predecessor. There is no scheduling, task API, or GUI automation runtime.
+
 # v0.1.0-beta.1 — first source beta
 
 Sleepless Guard is an independent MIT-licensed derivative of Aboudjem/Sleepless v1.2.7, with English, Simplified Chinese, and Traditional Chinese controls and an independent guard for explicit keep-awake sessions.

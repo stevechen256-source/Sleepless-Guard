@@ -16,11 +16,12 @@ BUNDLE="$STAGE/SleeplessCN.app"
 mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
 echo 'Building Sleepless CN Guard...'
 swiftc -O -parse-as-library -target "$TARGET" -framework AppKit -framework ServiceManagement \
-  "$ROOT/App.swift" -o "$BUNDLE/Contents/MacOS/SleeplessCN"
+  "$ROOT/App.swift" "$ROOT/PowerState.swift" -o "$BUNDLE/Contents/MacOS/SleeplessCN"
 cp "$ROOT/Info.plist" "$BUNDLE/Contents/Info.plist"
 cp "$ROOT/assets/Sleepless.icns" "$BUNDLE/Contents/Resources/Sleepless.icns"
 cp -R "$ROOT/locales/"*.lproj "$BUNDLE/Contents/Resources/"
 cp "$ROOT/grant.sh" "$ROOT/NOTICE.md" "$ROOT/LICENSE" "$BUNDLE/Contents/Resources/"
+cp "$ROOT/scripts/diagnostics.py" "$BUNDLE/Contents/Resources/"
 chmod 755 "$BUNDLE/Contents/Resources/grant.sh" "$BUNDLE/Contents/MacOS/SleeplessCN"
 /usr/bin/codesign --force --deep --sign - "$BUNDLE"
 /usr/bin/codesign --verify --strict "$BUNDLE"
